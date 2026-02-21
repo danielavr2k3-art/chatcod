@@ -1,14 +1,8 @@
-//@version=5
-strategy(
-     "MNQ ORB 5M (Israel Time)",
-     overlay = true,
-     pyramiding = 0,
-     process_orders_on_close = true,
-     initial_capital = 100000
-)
+//@version=6
+strategy("MNQ ORB 5M (Israel Time)", overlay = true, pyramiding = 0, process_orders_on_close = true, initial_capital = 100000)
 
 // === Core settings ===
-timezoneInput = input.string("Asia/Jerusalem", "Reference Timezone")
+const string TZ = "Asia/Jerusalem"
 usdPerPoint = input.float(2.0, "MNQ USD per point", minval = 0.01, step = 0.01)
 maxTradesPerDay = input.int(1, "Max trades per day", minval = 1, maxval = 10)
 
@@ -34,22 +28,19 @@ takeProfitUsd = input.float(1000.0, "Take profit (USD)", minval = 1.0, step = 1.
 min4hDistanceUsd = input.float(1200.0, "Min 4H distance from EMA14 in scenario #2 (USD)", minval = 0.0, step = 1.0)
 longWick4hPct = input.float(30.0, "4H both-wicks rejection threshold (%)", minval = 0.0, maxval = 100.0, step = 0.1) / 100.0
 
-f_minutes(_ts, _tz) =>
-    hour(_ts, _tz) * 60 + minute(_ts, _tz)
-
 f_is_bull(_c, _ema14, _ema50) =>
     _c > _ema14 and _ema14 > _ema50
 
 f_is_bear(_c, _ema14, _ema50) =>
     _c < _ema14 and _ema14 < _ema50
 
-barCloseMinutes = f_minutes(time_close, timezoneInput)
+barCloseMinutes = hour(time_close, TZ) * 60 + minute(time_close, TZ)
 orbCloseMinutes = orbCloseHour * 60 + orbCloseMinute
 entryStartMinutes = entryStartHour * 60 + entryStartMinute
 entryEndMinutes = entryEndHour * 60 + entryEndMinute
 forceFlatMinutes = forceFlatHour * 60 + forceFlatMinute
 
-dayKey = year(time_close, timezoneInput) * 1000 + dayofyear(time_close, timezoneInput)
+dayKey = year(time_close, TZ) * 1000 + dayofyear(time_close, TZ)
 
 // === Day state ===
 var int activeDay = na
