@@ -1,0 +1,206 @@
+//@version=5
+strategy(
+     "MNQ ORB 5M (Israel Time)",
+     overlay = true,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     initial_capital = 100000
+)
+
+// === Core settings ===
+timezoneInput = input.string("Asia/Jerusalem", "Reference Timezone")
+usdPerPoint = input.float(2.0, "MNQ USD per point", minval = 0.01, step = 0.01)
+maxTradesPerDay = input.int(1, "Max trades per day", minval = 1, maxval = 10)
+
+// === Session timing (Israel time) ===
+orbCloseHour = input.int(16, "ORB candle close hour", minval = 0, maxval = 23)
+orbCloseMinute = input.int(35, "ORB candle close minute", minval = 0, maxval = 59)
+entryStartHour = input.int(16, "Entry window start hour", minval = 0, maxval = 23)
+entryStartMinute = input.int(40, "Entry window start minute", minval = 0, maxval = 59)
+entryEndHour = input.int(17, "Last entry hour", minval = 0, maxval = 23)
+entryEndMinute = input.int(15, "Last entry minute", minval = 0, maxval = 59)
+forceFlatHour = input.int(23, "Force close hour", minval = 0, maxval = 23)
+forceFlatMinute = input.int(0, "Force close minute", minval = 0, maxval = 59)
+
+// === Candle and ORB logic ===
+breakoutWickMaxPct = input.float(10.0, "Breakout opposite wick max (%)", minval = 0.0, maxval = 100.0, step = 0.1) / 100.0
+nearStopWickPct = input.float(30.0, "Wick threshold for near ORB stop (%)", minval = 0.0, maxval = 100.0, step = 0.1) / 100.0
+useMaxStopCap = input.bool(true, "Limit stop distance to fixed USD max")
+maxStopUsd = input.float(300.0, "Max stop loss (USD)", minval = 1.0, step = 1.0)
+beTriggerUsd = input.float(300.0, "Move stop to breakeven after profit (USD)", minval = 1.0, step = 1.0)
+takeProfitUsd = input.float(1000.0, "Take profit (USD)", minval = 1.0, step = 1.0)
+
+// === MTF EMA filters ===
+min4hDistanceUsd = input.float(1200.0, "Min 4H distance from EMA14 in scenario #2 (USD)", minval = 0.0, step = 1.0)
+longWick4hPct = input.float(30.0, "4H both-wicks rejection threshold (%)", minval = 0.0, maxval = 100.0, step = 0.1) / 100.0
+
+f_minutes(_ts, _tz) =>
+    hour(_ts, _tz) * 60 + minute(_ts, _tz)
+
+f_is_bull(_c, _ema14, _ema50) =>
+    _c > _ema14 and _ema14 > _ema50
+
+f_is_bear(_c, _ema14, _ema50) =>
+    _c < _ema14 and _ema14 < _ema50
+
+barCloseMinutes = f_minutes(time_close, timezoneInput)
+orbCloseMinutes = orbCloseHour * 60 + orbCloseMinute
+entryStartMinutes = entryStartHour * 60 + entryStartMinute
+entryEndMinutes = entryEndHour * 60 + entryEndMinute
+forceFlatMinutes = forceFlatHour * 60 + forceFlatMinute
+
+dayKey = year(time_close, timezoneInput) * 1000 + dayofyear(time_close, timezoneInput)
+
+// === Day state ===
+var int activeDay = na
+var int tradesToday = 0
+var float orbHigh = na
+var float orbLow = na
+var bool orbReady = false
+var float activeStop = na
+var bool movedToBE = false
+
+if dayKey != activeDay
+    activeDay := dayKey
+    tradesToday := 0
+    orbHigh := na
+    orbLow := na
+    orbReady := false
+    activeStop := na
+    movedToBE := false
+
+// Capture the 5m ORB candle that closes at 16:35 Israel time.
+if barCloseMinutes == orbCloseMinutes
+    orbHigh := high
+    orbLow := low
+    orbReady := true
+
+// === EMA data on all required timeframes ===
+ema14_5 = ta.ema(close, 14)
+ema50_5 = ta.ema(close, 50)
+bull5 = f_is_bull(close, ema14_5, ema50_5)
+bear5 = f_is_bear(close, ema14_5, ema50_5)
+
+c15 = request.security(syminfo.tickerid, "15", close, lookahead = barmerge.lookahead_off)
+ema14_15 = request.security(syminfo.tickerid, "15", ta.ema(close, 14), lookahead = barmerge.lookahead_off)
+ema50_15 = request.security(syminfo.tickerid, "15", ta.ema(close, 50), lookahead = barmerge.lookahead_off)
+bull15 = f_is_bull(c15, ema14_15, ema50_15)
+bear15 = f_is_bear(c15, ema14_15, ema50_15)
+
+c60 = request.security(syminfo.tickerid, "60", close, lookahead = barmerge.lookahead_off)
+ema14_60 = request.security(syminfo.tickerid, "60", ta.ema(close, 14), lookahead = barmerge.lookahead_off)
+ema50_60 = request.security(syminfo.tickerid, "60", ta.ema(close, 50), lookahead = barmerge.lookahead_off)
+bull60 = f_is_bull(c60, ema14_60, ema50_60)
+bear60 = f_is_bear(c60, ema14_60, ema50_60)
+
+o240 = request.security(syminfo.tickerid, "240", open, lookahead = barmerge.lookahead_off)
+h240 = request.security(syminfo.tickerid, "240", high, lookahead = barmerge.lookahead_off)
+l240 = request.security(syminfo.tickerid, "240", low, lookahead = barmerge.lookahead_off)
+c240 = request.security(syminfo.tickerid, "240", close, lookahead = barmerge.lookahead_off)
+ema14_240 = request.security(syminfo.tickerid, "240", ta.ema(close, 14), lookahead = barmerge.lookahead_off)
+ema50_240 = request.security(syminfo.tickerid, "240", ta.ema(close, 50), lookahead = barmerge.lookahead_off)
+bull240 = f_is_bull(c240, ema14_240, ema50_240)
+bear240 = f_is_bear(c240, ema14_240, ema50_240)
+neutral240 = not bull240 and not bear240
+
+range240 = math.max(h240 - l240, syminfo.mintick)
+upperWick240 = h240 - math.max(o240, c240)
+lowerWick240 = math.min(o240, c240) - l240
+bothLongWicks240 = (upperWick240 / range240 >= longWick4hPct) and (lowerWick240 / range240 >= longWick4hPct)
+dist4hFromEma14Usd = math.abs(c240 - ema14_240) * usdPerPoint
+
+allAlignedLong = bull5 and bull15 and bull60 and bull240
+allAlignedShort = bear5 and bear15 and bear60 and bear240
+
+scenario2Long = bull5 and bull15 and bull60 and neutral240 and dist4hFromEma14Usd >= min4hDistanceUsd
+scenario2Short = bear5 and bear15 and bear60 and neutral240 and dist4hFromEma14Usd >= min4hDistanceUsd
+
+directionLongOk = allAlignedLong or scenario2Long
+directionShortOk = allAlignedShort or scenario2Short
+
+// === Breakout candle rules ===
+barRange = math.max(high - low, syminfo.mintick)
+upperWick = high - math.max(open, close)
+lowerWick = math.min(open, close) - low
+upperWickPct = upperWick / barRange
+lowerWickPct = lowerWick / barRange
+
+longBreakout = orbReady and close > orbHigh and upperWickPct <= breakoutWickMaxPct
+shortBreakout = orbReady and close < orbLow and lowerWickPct <= breakoutWickMaxPct
+
+// Stop side by breakout-candle wick structure.
+longUseNearSide = lowerWickPct >= nearStopWickPct
+shortUseNearSide = upperWickPct >= nearStopWickPct
+
+longOrbStop = longUseNearSide ? orbHigh : orbLow
+shortOrbStop = shortUseNearSide ? orbLow : orbHigh
+
+maxStopPoints = maxStopUsd / usdPerPoint
+longFixedStop = close - maxStopPoints
+shortFixedStop = close + maxStopPoints
+
+longStop = useMaxStopCap ? math.max(longOrbStop, longFixedStop) : longOrbStop
+shortStop = useMaxStopCap ? math.min(shortOrbStop, shortFixedStop) : shortOrbStop
+
+validLongStop = longStop < close
+validShortStop = shortStop > close
+
+inEntryWindow = barCloseMinutes >= entryStartMinutes and barCloseMinutes <= entryEndMinutes
+canEnter = strategy.position_size == 0 and tradesToday < maxTradesPerDay and inEntryWindow and not bothLongWicks240
+
+longSignal = canEnter and directionLongOk and longBreakout and validLongStop
+shortSignal = canEnter and directionShortOk and shortBreakout and validShortStop
+
+if longSignal
+    strategy.entry("Long", strategy.long)
+    activeStop := longStop
+    movedToBE := false
+    tradesToday += 1
+
+if shortSignal
+    strategy.entry("Short", strategy.short)
+    activeStop := shortStop
+    movedToBE := false
+    tradesToday += 1
+
+beTriggerPoints = beTriggerUsd / usdPerPoint
+takeProfitPoints = takeProfitUsd / usdPerPoint
+
+if strategy.position_size > 0
+    longEntry = strategy.position_avg_price
+    longBePrice = longEntry + beTriggerPoints
+    longTpPrice = longEntry + takeProfitPoints
+    if not movedToBE and high >= longBePrice
+        activeStop := math.max(activeStop, longEntry)
+        movedToBE := true
+    strategy.exit("Long Exit", from_entry = "Long", stop = activeStop, limit = longTpPrice)
+
+if strategy.position_size < 0
+    shortEntry = strategy.position_avg_price
+    shortBePrice = shortEntry - beTriggerPoints
+    shortTpPrice = shortEntry - takeProfitPoints
+    if not movedToBE and low <= shortBePrice
+        activeStop := math.min(activeStop, shortEntry)
+        movedToBE := true
+    strategy.exit("Short Exit", from_entry = "Short", stop = activeStop, limit = shortTpPrice)
+
+// Reset state when position closes.
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    activeStop := na
+    movedToBE := false
+
+// Do not keep open positions past 23:00 Israel time.
+if barCloseMinutes >= forceFlatMinutes and strategy.position_size != 0
+    strategy.close_all("Force close at daily cutoff")
+
+// === Visuals ===
+plot(ema14_5, "EMA 14 (5m)", color = color.new(color.orange, 0), linewidth = 2)
+plot(ema50_5, "EMA 50 (5m)", color = color.new(color.blue, 0), linewidth = 2)
+plot(orbReady ? orbHigh : na, "ORB High", color = color.new(color.green, 0), linewidth = 2, style = plot.style_linebr)
+plot(orbReady ? orbLow : na, "ORB Low", color = color.new(color.red, 0), linewidth = 2, style = plot.style_linebr)
+
+plotshape(longSignal, title = "Long Signal", style = shape.triangleup, location = location.belowbar, size = size.tiny, color = color.new(color.green, 0), text = "L")
+plotshape(shortSignal, title = "Short Signal", style = shape.triangledown, location = location.abovebar, size = size.tiny, color = color.new(color.red, 0), text = "S")
+
+alertcondition(longSignal, title = "MNQ ORB Long", message = "MNQ ORB long signal")
+alertcondition(shortSignal, title = "MNQ ORB Short", message = "MNQ ORB short signal")
