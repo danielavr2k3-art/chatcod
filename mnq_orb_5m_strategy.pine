@@ -40,7 +40,7 @@ entryStartMinutes = entryStartHour * 60 + entryStartMinute
 entryEndMinutes = entryEndHour * 60 + entryEndMinute
 forceFlatMinutes = forceFlatHour * 60 + forceFlatMinute
 
-dayKey = year(time_close, TZ) * 1000 + dayofyear(time_close, TZ)
+dayKey = year(time_close, TZ) * 10000 + month(time_close, TZ) * 100 + dayofmonth(time_close, TZ)
 
 // === Day state ===
 var int activeDay = na
