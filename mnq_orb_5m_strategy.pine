@@ -1,5 +1,5 @@
 //@version=6
-strategy("MNQ ORB 5M (Israel Time)", overlay = true, pyramiding = 0, process_orders_on_close = true, initial_capital = 100000)
+strategy("MNQ ORB 5M (Israel Time)", overlay = true, pyramiding = 0, process_orders_on_close = false, calc_on_every_tick = true, initial_capital = 100000)
 
 // === Core settings ===
 const string TZ = "Asia/Jerusalem"
@@ -116,8 +116,9 @@ lowerWick = math.min(open, close) - low
 upperWickPct = upperWick / barRange
 lowerWickPct = lowerWick / barRange
 
-longBreakout = orbReady and close > orbHigh and upperWickPct <= breakoutWickMaxPct
-shortBreakout = orbReady and close < orbLow and lowerWickPct <= breakoutWickMaxPct
+// Entry is immediate at breakout (market), so trigger on high/low breach.
+longBreakout = orbReady and high > orbHigh and upperWickPct <= breakoutWickMaxPct
+shortBreakout = orbReady and low < orbLow and lowerWickPct <= breakoutWickMaxPct
 
 // Stop side by breakout-candle wick structure.
 longUseNearSide = lowerWickPct >= nearStopWickPct
@@ -127,8 +128,9 @@ longOrbStop = longUseNearSide ? orbHigh : orbLow
 shortOrbStop = shortUseNearSide ? orbLow : orbHigh
 
 maxStopPoints = maxStopUsd / usdPerPoint
-longFixedStop = close - maxStopPoints
-shortFixedStop = close + maxStopPoints
+entryRefPrice = close
+longFixedStop = entryRefPrice - maxStopPoints
+shortFixedStop = entryRefPrice + maxStopPoints
 
 longStop = useMaxStopCap ? math.max(longOrbStop, longFixedStop) : longOrbStop
 shortStop = useMaxStopCap ? math.min(shortOrbStop, shortFixedStop) : shortOrbStop
@@ -147,8 +149,7 @@ if longSignal
     activeStop := longStop
     movedToBE := false
     tradesToday += 1
-
-if shortSignal
+else if shortSignal
     strategy.entry("Short", strategy.short)
     activeStop := shortStop
     movedToBE := false
